@@ -501,36 +501,135 @@ __RAM_CODE void matrixkey_scan(void)
 extern void                 hi5_usb_init(void);
 extern void                 usb_disconnect(void);
 
+extern bool                 busb_valid;
+
+//-----------------------------------------------------------------------------
+// 插电识别: 区分电脑(USB 主机)和充电头
+//
+// 主机 D+/D- 各有 15K 下拉; 充电头 D+/D- 悬空、短接或者接分压电阻, 没有下拉.
+// 把 D+/D- 临时切成 150K 内部上拉: 两根都读到低 = 主机, 否则 = 充电头.
+// 分压电压偏低的充电头可能被当成主机, 所以进了 USB 模式还要看枚举: 3 秒内没有 SOF 就当充电头退回无线模式.
+//
+#define RSVD1_USB_CHARGER           (1u<<30)    // USB 模式枚举超时判成充电头, 带过复位: 复位后不再识别, 直接按充电处理
+
+#define iVBUS_OFF                   0           // 没插电
+#define iVBUS_DEBOUNCE              1           // 刚插电, 等 D+/D- 接触稳定再识别
+#define iVBUS_CHARGER               2           // 充电头: 保持当前模式
+#define iVBUS_HOST                  3           // 主机: USB 模式
+#define iVBUS_ENUM_START            4           // 上电识别是主机, 进 USB 模式后开始等枚举
+#define iVBUS_ENUM_WAIT             5           // 等 SOF
+
+static uint8_t                  vbus_state;
+static uint32_t                 vbus_rtc;
+
+/******************************************************************************
+* 函数名称: usb_host_detect()
+* 功能描述: 识别插的是不是 USB 主机
+* 输入参数: 无
+* 输出参数: true 主机, false 充电头
+* 说    明: 只在没开 USB 控制器(无线模式/上电)时调用, D+/D- 平时是下拉, 测完恢复下拉.
+******************************************************************************/
+static bool usb_host_detect(void)
+{
+    uint32_t buf_en = OM_PMU->PAD_BUF_EN;
+    bool     host;
+
+    OM_PMU->PAD_BUF_EN |= ((1<<USB_DN_PIN)|(1<<USB_DP_PIN));
+    drv_pmu_pin_mode_set(USB_DN_PIN, PMU_PIN_MODE_PU);
+    drv_pmu_pin_mode_set(USB_DP_PIN, PMU_PIN_MODE_PU);
+    delayus(1000);                              // 150K 上拉给线上电容充电
+
+    host = (0 == (OM_GPIO0->DATA & ((1<<USB_DN_PIN)|(1<<USB_DP_PIN))));
+
+    drv_pmu_pin_mode_set(USB_DN_PIN, PMU_PIN_MODE_PD);
+    drv_pmu_pin_mode_set(USB_DP_PIN, PMU_PIN_MODE_PD);
+    OM_PMU->PAD_BUF_EN = buf_en;
+
+    return host;
+}
+
 /******************************************************************************
 * 函数名称: scan_mode_swtich()
 * 功能描述: 模式切换
 * 输入参数: type 上电检测 iMODE_CHECK_POWERUP, 其余为运行中检测
 * 输出参数: 无
-* 说    明: 插着 USB(USB_5V_PIN 高)就是 USB 模式; 没插 USB 是无线模式, 看 P36(MODE_PIN):
+* 说    明: 插电时区分主机和充电头: 插的是主机就是 USB 模式; 充电头或没插电是无线模式, 看 P36(MODE_PIN):
 *           低 = 蓝牙(用上次的蓝牙通道), 高 = 2.4G.
 *           上电时直接按检测结果定 device_type; 运行中和当前模式不一样就复位, 复位后
-*           上电流程再按新模式起来. 不去抖, 运行中的 iMODE_CHECK_DELAY / NO_DELAY 一样处理.
+*           上电流程再按新模式起来. 运行中的 iMODE_CHECK_DELAY / NO_DELAY 一样处理.
 ******************************************************************************/
 void scan_mode_swtich(uint8_t type)
 {
     device_type_t dev;
+    uint32_t      now;
 
     // 通道号是从 flash 读的(2 位, 可能读出 3), 读出 3 会把蓝牙当成 2.4G
     if(iDEVICE_TYPE_BT2 < bt_index)
         bt_index = iDEVICE_TYPE_BT0;
 
-    if(0 != USB_5V_PIN)
+    if(iMODE_CHECK_POWERUP == type)
+    {
+        if(0 == USB_5V_PIN)
+            vbus_state = iVBUS_OFF;
+        else if(OM_PMU->SW_RSVD1 & RSVD1_USB_CHARGER)
+            vbus_state = iVBUS_CHARGER;
+        else if(usb_host_detect())
+            vbus_state = iVBUS_ENUM_START;
+        else
+            vbus_state = iVBUS_OFF;             // 刚插上 D+/D- 可能还没接触好, 运行中消抖后再识别一次
+        OM_PMU->SW_RSVD1 &= ~RSVD1_USB_CHARGER;
+
+        if(iVBUS_ENUM_START == vbus_state)
+            device_type = iDEVICE_TYPE_USB;
+        else if(0 == MODE_DATA)
+            device_type = bt_index;
+        else
+            device_type = iDEVICE_TYPE_24G;
+        return;
+    }
+
+    now = drv_rtc_read(OM_RTC);
+    if(0 == USB_5V_PIN)
+    {
+        vbus_state = iVBUS_OFF;
+    }
+    else
+    {
+        switch(vbus_state)
+        {
+            case iVBUS_OFF:
+                vbus_state = iVBUS_DEBOUNCE;
+                vbus_rtc = now;
+                break;
+            case iVBUS_DEBOUNCE:
+                if((iDEVICE_TYPE_USB != device_type)
+                    && (mMS_TO_TICK(200) < (now - vbus_rtc)))
+                    vbus_state = usb_host_detect() ? iVBUS_HOST : iVBUS_CHARGER;
+                break;
+            case iVBUS_ENUM_START:
+                vbus_state = iVBUS_ENUM_WAIT;
+                vbus_rtc = now;
+                break;
+            case iVBUS_ENUM_WAIT:
+                if(true == busb_valid)
+                    vbus_state = iVBUS_HOST;
+                else if(mMS_TO_TICK(3000) < (now - vbus_rtc))
+                {                               // 没枚举: 是充电头, 退回无线模式
+                    vbus_state = iVBUS_CHARGER;
+                    OM_PMU->SW_RSVD1 |= RSVD1_USB_CHARGER;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    if((iVBUS_HOST == vbus_state) || (iVBUS_ENUM_START == vbus_state) || (iVBUS_ENUM_WAIT == vbus_state))
         dev = iDEVICE_TYPE_USB;
-    else if(0 == MODE_DATA)
+    else if(0 == MODE_DATA)                     // 充电头/没插电/还在识别: 无线模式
         dev = bt_index;
     else
         dev = iDEVICE_TYPE_24G;
-
-    if(iMODE_CHECK_POWERUP == type)
-    {
-        device_type = dev;
-        return;
-    }
 
     if(dev == device_type)
         return;

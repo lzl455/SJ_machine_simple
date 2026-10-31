@@ -67,7 +67,7 @@ uint8_t exled_pins(void)
         pins |= bEXLED_NUM;
     if(kb_led_status & bcaps_lock)
         pins |= bEXLED_CAPS;
-    if(0 != USB_5V_PIN)
+    if(iDEVICE_TYPE_USB == device_type)        // 只在 USB 模式下亮, 插充电头不亮
         pins |= bEXLED_USB;
     if((key_ctrl & bwin_mac_sataus) && (key_ctrl & bwin_lock_status))   // Win 锁只在 Win 模式下起作用
         pins |= bEXLED_WIN_LOCK;

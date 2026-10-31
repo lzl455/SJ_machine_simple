@@ -16,7 +16,7 @@ void exled_tx(uint8_t data);
 // DIG5 状态位, 1 = 点亮
 #define bEXLED_NUM          (1<<6)      // Num Lock 有效
 #define bEXLED_CAPS         (1<<5)      // Caps Lock 有效
-#define bEXLED_USB          (1<<4)      // 插着有线(USB 5V 在)
+#define bEXLED_USB          (1<<4)      // USB 模式(插电脑); 插充电头不亮
 #define bEXLED_WIN_LOCK     (1<<3)      // Win 键锁定(Win 模式下 FN+Win 锁住)
 
 // 按当前状态拼出 DIG5, 发送: exled_send(mode, exled_pins())
