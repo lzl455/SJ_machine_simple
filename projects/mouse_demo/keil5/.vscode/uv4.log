@@ -1,0 +1,6 @@
+*** Using Compiler 'V6.16', folder: 'D:\Keil_v5\ARM\ARMCompiler6.11\Bin'
+Build target 'SE73K'
+After Build - User command #1: fromelf.exe --bin --output "SE73K.bin" "c:\Users\Administrator\Desktop\6252\SE73K_0023_PX710MAX_ARGB_LIB_20260107\projects\mouse_demo\keil5\out\SE73K.axf"
+After Build - User command #2: fromelf.exe -c --output ".\_build\SE73K.dis" "c:\Users\Administrator\Desktop\6252\SE73K_0023_PX710MAX_ARGB_LIB_20260107\projects\mouse_demo\keil5\out\SE73K.axf"
+".\out\SE73K.axf" - 0 Error(s), 0 Warning(s).
+Build Time Elapsed:  00:00:01
